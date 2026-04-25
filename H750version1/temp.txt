@@ -1,0 +1,25 @@
+import tensorflow as tf
+from tensorflow.keras.applications import MobileNetV2
+
+# 加载预训练MobileNetV2模型（224x224x3输入，ImageNet 1000类分类）
+model = MobileNetV2(
+    input_shape=(224, 224, 3),
+    weights='imagenet',
+    include_top=True,
+    classes=1000
+)
+model.summary()
+
+# 配置TFLite转换器，启用INT8量化（核心：降低精度提升嵌入式端运行效率）
+converter = tf.lite.TFLiteConverter.from_keras_model(model)
+converter.optimizations = [tf.lite.Optimize.DEFAULT]  # 启用默认优化
+converter.target_spec.supported_types = [tf.int8]     # 指定INT8量化
+# 量化校准（简化版，实际项目可导入自定义校准数据集提升精度）
+converter.representative_dataset = lambda: [tf.random.normal([1, 224, 224, 3])]
+
+# 导出INT8量化后的TFLite模型
+tflite_model = converter.convert()
+with open('mobilenetv2_int8.tflite', 'wb') as f:
+    f.write(tflite_model)
+
+print("✅ MobileNetV2 INT8量化完成，模型保存为：mobilenetv2_int8.tflite")
