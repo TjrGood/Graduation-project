@@ -30,6 +30,8 @@
 #include "network_2_data.h"
 #include "ai_image_process.h"
 #include <stdio.h>
+#include <string.h>
+
 uint16_t	Camera_Buffer[Display_Width*Display_Height]; 
 
 /* USER CODE END Includes */
@@ -62,6 +64,8 @@ UART_HandleTypeDef huart1;
 ai_handle network_handle = AI_HANDLE_NULL;
 
 static AI_ALIGNED(32) ai_u8 activations[AI_NETWORK_2_DATA_ACTIVATIONS_SIZE];
+// 新增：RAM 权重缓冲区 (约 214KB)
+static AI_ALIGNED(32) ai_u8 network_weights_ram[AI_NETWORK_2_DATA_WEIGHTS_SIZE];
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -159,16 +163,16 @@ int main(void)
         printf("AI Create Error: %d\r\n", err.code);
         while(1);
     }
-    // 2. 准备初始化参数 (回到手动模式，但在你的环境下这个模式最稳)
-    const ai_network_params params = {
-        AI_NETWORK_2_DATA_WEIGHTS(0x90000000),     // 权重地址
-        AI_NETWORK_2_DATA_ACTIVATIONS(activations) // 激活区地址
-    };
+    // 1.5 搬运权重到 RAM (核心优化：从此告别 QSPI 导致的 Cache 卡死)
+    printf("Copying weights from QSPI to RAM...\r\n");
+    memcpy(network_weights_ram, (uint8_t*)0x90000000, AI_NETWORK_2_DATA_WEIGHTS_SIZE);
+    printf("Copy Done!\r\n");
 
-    // --- 新增：临时测试代码：检查 QSPI 权重是否可读 ---
-    printf("Checking Flash weights at 0x90000000...\r\n");
-    uint32_t *test_ptr = (uint32_t *)0x90000000;
-    printf("Flash Data (First 4 bytes): 0x%08X\r\n", *test_ptr);
+    // 2. 准备初始化参数 (使用 RAM 地址)
+    const ai_network_params params = {
+        AI_NETWORK_2_DATA_WEIGHTS(network_weights_ram),     // 指向 RAM 中的权重
+        AI_NETWORK_2_DATA_ACTIVATIONS(activations)          // 激活区地址
+    };
     
     // 3. 执行初始化
     printf("Initializing AI Engine...\r\n");
@@ -206,13 +210,11 @@ int main(void)
     {
         // 1. 彻底停止 DCMI，释放总线
         HAL_DCMI_Stop(&hdcmi);
-				printf("Frame Received!\r\n"); // 加这一行：确认 DCMI 中断是否在工作
         OV5640_FrameState = 0;
         
         // --- 关键：Invalidate D-Cache ---
         // 摄像头 DMA 写入了 Camera_Buffer，CPU 读取前必须失效缓存，否则会读到旧数据导致“卡死”
         SCB_InvalidateDCache_by_Addr((uint32_t *)Camera_Buffer, sizeof(Camera_Buffer));
-         printf("Updating LCD...\r\n"); // 加这一行
         // 2. 刷新屏幕
         LCD_CopyBuffer(0,0,Display_Width,Display_Height, (uint16_t *)Camera_Buffer);
 				LCD_DisplayString( 84 ,240,"FPS:");
@@ -220,10 +222,8 @@ int main(void)
         // 关键修正：强制 32 字节对齐，防止 D-Cache 开启时的数据污染
         static AI_ALIGNED(32) int8_t ai_in[96*96];
         static AI_ALIGNED(32) int8_t ai_out[2];
-        printf("Running Image Process...\r\n"); // 加这一行
         // 3. 预处理
         Image_Process_RGB565_to_Gray96((uint16_t *)Camera_Buffer, ai_in);
-				printf("Running AI Inference...\r\n"); // 加这一行
         // 4. 正确获取输入输出缓冲区指针
         ai_buffer *p_input;
         ai_buffer *p_output; 	
@@ -234,23 +234,17 @@ int main(void)
         p_input[0].data = AI_HANDLE_PTR(ai_in);
         p_output[0].data = AI_HANDLE_PTR(ai_out);
         // 6. 运行推理
-        // printf("AI Running...\r\n");
-				// 打印调试信息：确认指针是否有效
-        printf("In: %p, Out: %p, Activations: %p\r\n", p_input, p_output, activations);
+				static uint32_t print_count = 0;
 				if (ai_network_2_run(network_handle, p_input, p_output) == 1) {
-						if (ai_out[1] > ai_out[0]) {
-								printf(">>> Detect: Person! [%d]\r\n", ai_out[1]);
-						} else {
-								printf("No person. [%d, %d]\r\n", ai_out[0], ai_out[1]);
+						// 串口输出：抽样打印 (每 20 帧一次)
+						if (++print_count >= 20) {
+								print_count = 0;
+								if (ai_out[1] > 80) printf(">>> Detect: Person! [%d]\r\n", ai_out[1]);
+								else printf("No person. [%d]\r\n", ai_out[1]);
 						}
-				} else {
-						err = ai_network_2_get_error(network_handle);
-						printf("AI Run Error: %d\r\n", err.code);
 				}
         // 5. 处理完，重新启动 DCMI DMA 传输
         HAL_DCMI_Start_DMA(&hdcmi, DCMI_MODE_CONTINUOUS, (uint32_t)Camera_Buffer, Display_BufferSize);				
-        printf("Done!\r\n"); // 加这一行
-				HAL_Delay(100);
         LED1_Toggle;
         // printf("Frame Processed\r\n");
     }
@@ -541,14 +535,28 @@ void MPU_Config(void)
   MPU_InitStruct.BaseAddress = 0x24000000;
   MPU_InitStruct.Size = MPU_REGION_SIZE_512KB;
   MPU_InitStruct.SubRegionDisable = 0x0;
-  MPU_InitStruct.TypeExtField = MPU_TEX_LEVEL0;
+  MPU_InitStruct.TypeExtField = MPU_TEX_LEVEL1; // Write-Back
   MPU_InitStruct.AccessPermission = MPU_REGION_FULL_ACCESS;
   MPU_InitStruct.DisableExec = MPU_INSTRUCTION_ACCESS_ENABLE;
-  MPU_InitStruct.IsShareable = MPU_ACCESS_SHAREABLE;
+  MPU_InitStruct.IsShareable = MPU_ACCESS_NOT_SHAREABLE;
   MPU_InitStruct.IsCacheable = MPU_ACCESS_CACHEABLE;
   MPU_InitStruct.IsBufferable = MPU_ACCESS_BUFFERABLE;
-
   HAL_MPU_ConfigRegion(&MPU_InitStruct);
+
+  /* 2. 关键：配置 QSPI Flash 区域 (0x90000000) - 禁用 Cache 防止预取卡死 */
+  MPU_InitStruct.Enable = MPU_REGION_ENABLE;
+  MPU_InitStruct.Number = MPU_REGION_NUMBER1;
+  MPU_InitStruct.BaseAddress = 0x90000000;
+  MPU_InitStruct.Size = MPU_REGION_SIZE_256MB;
+  MPU_InitStruct.SubRegionDisable = 0x00;
+  MPU_InitStruct.AccessPermission = MPU_REGION_FULL_ACCESS;
+  MPU_InitStruct.DisableExec = MPU_INSTRUCTION_ACCESS_DISABLE; // 禁止在此执行
+  MPU_InitStruct.IsShareable = MPU_ACCESS_NOT_SHAREABLE;
+  MPU_InitStruct.IsCacheable = MPU_ACCESS_NOT_CACHEABLE;        // 禁用 Cache
+  MPU_InitStruct.IsBufferable = MPU_ACCESS_NOT_BUFFERABLE;
+  MPU_InitStruct.TypeExtField = MPU_TEX_LEVEL0;
+  HAL_MPU_ConfigRegion(&MPU_InitStruct);
+
   /* Enables the MPU */
   HAL_MPU_Enable(MPU_PRIVILEGED_DEFAULT);
 
