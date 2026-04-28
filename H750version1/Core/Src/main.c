@@ -29,6 +29,7 @@
 #include "network_2.h"
 #include "network_2_data.h"
 #include "ai_image_process.h"
+#include "esp32_iot.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -48,7 +49,9 @@ uint16_t	Camera_Buffer[Display_Width*Display_Height];
 
 /* Private macro -------------------------------------------------------------*/
 /* USER CODE BEGIN PM */
-
+/* 蜂鸣器宏定义 (PA12, 低电平触发) */
+#define BEEP_ON     HAL_GPIO_WritePin(GPIOA, GPIO_PIN_12, GPIO_PIN_RESET)
+#define BEEP_OFF    HAL_GPIO_WritePin(GPIOA, GPIO_PIN_12, GPIO_PIN_SET)
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
@@ -59,6 +62,7 @@ QSPI_HandleTypeDef hqspi;
 SPI_HandleTypeDef hspi6;
 
 UART_HandleTypeDef huart1;
+UART_HandleTypeDef huart2; // ESP32
 
 /* USER CODE BEGIN PV */
 ai_handle network_handle = AI_HANDLE_NULL;
@@ -76,6 +80,7 @@ static void MX_DMA_Init(void);
 static void MX_SPI6_Init(void);
 static void MX_DCMI_Init(void);
 static void MX_USART1_UART_Init(void);
+static void MX_USART2_UART_Init(void);
 static void MX_QUADSPI_Init(void);
 /* USER CODE BEGIN PFP */
 
@@ -84,6 +89,8 @@ static void MX_QUADSPI_Init(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+
+/* USER CODE END 0 */
 
 
 
@@ -137,6 +144,7 @@ int main(void)
   MX_SPI6_Init();
   MX_DCMI_Init();
   MX_USART1_UART_Init();
+  MX_USART2_UART_Init();
 	MX_QUADSPI_Init();
 	printf("\r\n--- System Booting ---\r\n"); // 加这一行
   /* USER CODE BEGIN 2 */
@@ -181,44 +189,37 @@ int main(void)
         printf("AI Init Error: %d\r\n", err.code);
         while(1);
     }
-    printf("AI Engine Initialized OK!\r\n");
+    // --- OneNet 自动连接 (保持开启) ---
+    ESP32_IoT_Init();
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
-  
-	DCMI_OV5640_Init();   			 	// DCMI�Լ�OV5640��ʼ��
-	
-	OV5640_AF_Download_Firmware();	// Ð´Èë×Ô¶¯¶Ô½¹¹Ì¼þ
-	OV5640_AF_Trigger_Constant();		// �Զ��Խ� ������ ��������OV5640��⵽��ǰ���治�ڽ���ʱ����һֱ�����Խ�
-//	OV5640_AF_Trigger_Single();		//	�Զ��Խ� ������ ���� 
-	
-//	120�Ⱥ�160�ȵĹ�Ǿ�ͷĬ�ϵķ���ʹ��Զ��Խ��ľ�ͷ��һ�����û����Ը���ʵ��ȥ����
-//	OV5640_Set_Vertical_Flip( OV5640_Disable );		// ȡ����ֱ��ת
-//	OV5640_Set_Horizontal_Mirror( OV5640_Enable );	// ˮƽ����
-	printf("Starting DCMI DMA...\r\n"); // 加这一行
-	OV5640_DMA_Transmit_Continuous((uint32_t)Camera_Buffer, Display_BufferSize);  // 启动DMA连续传输
+    // --- 摄像头与 AI 功能恢复 ---
+    DCMI_OV5640_Init();   			 	
+    OV5640_AF_Download_Firmware();	
+    OV5640_AF_Trigger_Constant();		
+    printf("Starting DCMI DMA...\r\n"); 
+    OV5640_DMA_Transmit_Continuous((uint32_t)Camera_Buffer, Display_BufferSize);
 	
   while (1)
   {
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-
-
     if ( OV5640_FrameState == 1 )
     {
+        // 1. 运行 AI 识别
         // 1. 彻底停止 DCMI，释放总线
         HAL_DCMI_Stop(&hdcmi);
         OV5640_FrameState = 0;
         
-        // --- 关键：Invalidate D-Cache ---
         // 摄像头 DMA 写入了 Camera_Buffer，CPU 读取前必须失效缓存，否则会读到旧数据导致“卡死”
         SCB_InvalidateDCache_by_Addr((uint32_t *)Camera_Buffer, sizeof(Camera_Buffer));
         // 2. 刷新屏幕
         LCD_CopyBuffer(0,0,Display_Width,Display_Height, (uint16_t *)Camera_Buffer);
 				LCD_DisplayString( 84 ,240,"FPS:");
-				LCD_DisplayNumber( 132,240, OV5640_FPS,2) ;	// ÏÔÊ¾Ö¡ÂÊ
+				LCD_DisplayNumber( 132,240, OV5640_FPS,2) ;	
         // 关键修正：强制 32 字节对齐，防止 D-Cache 开启时的数据污染
         static AI_ALIGNED(32) int8_t ai_in[96*96];
         static AI_ALIGNED(32) int8_t ai_out[2];
@@ -239,14 +240,33 @@ int main(void)
 						// 串口输出：抽样打印 (每 20 帧一次)
 						if (++print_count >= 20) {
 								print_count = 0;
-								if (ai_out[1] > 80) printf(">>> Detect: Person! [%d]\r\n", ai_out[1]);
-								else printf("No person. [%d]\r\n", ai_out[1]);
-						}
-				}
+								if (ai_out[1] > 70)//阈值大于70 
+									{
+									printf(">>> Detect: Person! [%d]\r\n", ai_out[1]);
+									BEEP_ON;
+									}
+								else {
+									printf("No person. [%d]\r\n", ai_out[1]);
+									BEEP_OFF;
+								};
+								}
+						}     
+        // 2. 获取识别结果 (使用你的阈值 80)
+        int person_detected = (ai_out[1] > 70) ? 1 : 0;
+        
+        // 3. 按需上报：只有检测到人时，才每 5 秒上报一次
+        static uint32_t last_ai_report = 0;
+        if (person_detected == 1) { 
+            if (HAL_GetTick() - last_ai_report > 5000) { 
+                printf("\r\n[Alert] Person detected! Syncing to OneNet...\r\n");
+                OneNet_Publish_PersonState(1);
+                last_ai_report = HAL_GetTick();
+            }
+        }
         // 5. 处理完，重新启动 DCMI DMA 传输
-        HAL_DCMI_Start_DMA(&hdcmi, DCMI_MODE_CONTINUOUS, (uint32_t)Camera_Buffer, Display_BufferSize);				
+        HAL_DCMI_Start_DMA(&hdcmi, DCMI_MODE_CONTINUOUS, (uint32_t)Camera_Buffer, Display_BufferSize);
+        
         LED1_Toggle;
-        // printf("Frame Processed\r\n");
     }
   }
   /* USER CODE END 3 */
@@ -449,6 +469,30 @@ static void MX_USART1_UART_Init(void)
 }
 
 /**
+  * @brief USART2 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_USART2_UART_Init(void)
+{
+  huart2.Instance = USART2;
+  huart2.Init.BaudRate = 115200;
+  huart2.Init.WordLength = UART_WORDLENGTH_8B;
+  huart2.Init.StopBits = UART_STOPBITS_1;
+  huart2.Init.Parity = UART_PARITY_NONE;
+  huart2.Init.Mode = UART_MODE_TX_RX;
+  huart2.Init.HwFlowCtl = UART_HWCONTROL_NONE;
+  huart2.Init.OverSampling = UART_OVERSAMPLING_16;
+  huart2.Init.OneBitSampling = UART_ONE_BIT_SAMPLE_DISABLE;
+  huart2.Init.ClockPrescaler = UART_PRESCALER_DIV1;
+  huart2.AdvancedInit.AdvFeatureInit = UART_ADVFEATURE_NO_INIT;
+  if (HAL_UART_Init(&huart2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+}
+
+/**
   * Enable DMA controller clock
   */
 static void MX_DMA_Init(void)
@@ -511,8 +555,17 @@ static void MX_GPIO_Init(void)
   __HAL_RCC_GPIOC_CLK_ENABLE();
   __HAL_RCC_GPIOH_CLK_ENABLE();
 
-/* USER CODE BEGIN MX_GPIO_Init_2 */
-/* USER CODE END MX_GPIO_Init_2 */
+  /* USER CODE BEGIN MX_GPIO_Init_2 */
+  GPIO_InitTypeDef GPIO_InitStruct = {0};
+
+  /* PA12 配置为输出 (蜂鸣器) */
+  HAL_GPIO_WritePin(GPIOA, GPIO_PIN_12, GPIO_PIN_SET); // 默认高电平 (关闭)
+  GPIO_InitStruct.Pin = GPIO_PIN_12;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_PULLUP;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+  /* USER CODE END MX_GPIO_Init_2 */
 }
 
 /* USER CODE BEGIN 4 */
