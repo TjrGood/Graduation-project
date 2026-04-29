@@ -30,6 +30,7 @@
 #include "network_2_data.h"
 #include "ai_image_process.h"
 #include "esp32_iot.h"
+#include "pir.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -89,13 +90,6 @@ static void MX_QUADSPI_Init(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-
-/* USER CODE END 0 */
-
-
-
-
-
 /* USER CODE END 0 */
 
 /**
@@ -146,10 +140,10 @@ int main(void)
   MX_USART1_UART_Init();
   MX_USART2_UART_Init();
 	MX_QUADSPI_Init();
-	printf("\r\n--- System Booting ---\r\n"); // 加这一行
+	printf("\r\n--- System Booting ---\r\n"); 
   /* USER CODE BEGIN 2 */
-	LED_Init();					// ��ʼ��LED����
-	SPI_LCD_Init();     	 	// Һ������ʼ��   	
+	LED_Init();					
+	SPI_LCD_Init();     	   	
 	// 1. 初始化 QSPI 并开启内存映射模式
 	if (QSPI_W25Qxx_Init() == QSPI_W25Qxx_OK) {
 			printf("W25Q256 Init OK!\r\n");
@@ -189,18 +183,25 @@ int main(void)
         printf("AI Init Error: %d\r\n", err.code);
         while(1);
     }
-    // --- OneNet 自动连接 (保持开启) ---
+    // --- OneNet 自动连接 ---
     ESP32_IoT_Init();
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
-    // --- 摄像头与 AI 功能恢复 ---
+    // --- 1. PIR 与低功耗管理初始化 ---
+    PIR_Init();
+
+    // --- 2. 摄像头与 AI 初始化 ---
     DCMI_OV5640_Init();   			 	
     OV5640_AF_Download_Firmware();	
     OV5640_AF_Trigger_Constant();		
-    printf("Starting DCMI DMA...\r\n"); 
-    OV5640_DMA_Transmit_Continuous((uint32_t)Camera_Buffer, Display_BufferSize);
+    
+    printf("\r\n[System] All modules initialized. Starting...\r\n"); 
+    HAL_DCMI_Start_DMA(&hdcmi, DCMI_MODE_CONTINUOUS, (uint32_t)Camera_Buffer, Display_BufferSize);
+    
+    uint32_t heartbeat_tick = HAL_GetTick();
+    uint32_t frame_timeout_tick = HAL_GetTick();
 	
   while (1)
   {
@@ -209,15 +210,18 @@ int main(void)
     /* USER CODE BEGIN 3 */
     if ( OV5640_FrameState == 1 )
     {
-        // 1. 运行 AI 识别
-        // 1. 彻底停止 DCMI，释放总线
         HAL_DCMI_Stop(&hdcmi);
         OV5640_FrameState = 0;
         
-        // 摄像头 DMA 写入了 Camera_Buffer，CPU 读取前必须失效缓存，否则会读到旧数据导致“卡死”
+        // 模块化调用：检查是否需要进入休眠
+        if (PIR_Check_And_Sleep()) {
+            continue; 
+        }
+
         SCB_InvalidateDCache_by_Addr((uint32_t *)Camera_Buffer, sizeof(Camera_Buffer));
         // 2. 刷新屏幕
         LCD_CopyBuffer(0,0,Display_Width,Display_Height, (uint16_t *)Camera_Buffer);
+        
 				LCD_DisplayString( 84 ,240,"FPS:");
 				LCD_DisplayNumber( 132,240, OV5640_FPS,2) ;	
         // 关键修正：强制 32 字节对齐，防止 D-Cache 开启时的数据污染
@@ -241,7 +245,8 @@ int main(void)
 						if (++print_count >= 20) {
 								print_count = 0;
 								if (ai_out[1] > 70)//阈值大于70 
-									{
+								{
+									last_motion_tick = HAL_GetTick(); // AI 看到人也算“有动作”
 									printf(">>> Detect: Person! [%d]\r\n", ai_out[1]);
 									BEEP_ON;
 									}
@@ -257,6 +262,7 @@ int main(void)
         // 3. 按需上报：只有检测到人时，才每 5 秒上报一次
         static uint32_t last_ai_report = 0;
         if (person_detected == 1) { 
+            last_motion_tick = HAL_GetTick(); // AI 识别到人也算动作
             if (HAL_GetTick() - last_ai_report > 5000) { 
                 printf("\r\n[Alert] Person detected! Syncing to OneNet...\r\n");
                 OneNet_Publish_PersonState(1);

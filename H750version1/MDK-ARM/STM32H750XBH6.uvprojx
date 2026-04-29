@@ -459,6 +459,16 @@
               <FileType>1</FileType>
               <FilePath>..\Drivers\User\Src\qspi_w25q256.c</FilePath>
             </File>
+            <File>
+              <FileName>esp32_iot.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\Drivers\User\Src\esp32_iot.c</FilePath>
+            </File>
+            <File>
+              <FileName>pir.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\Drivers\User\Src\pir.c</FilePath>
+            </File>
           </Files>
         </Group>
         <Group>
@@ -1574,6 +1584,16 @@
               <FileName>qspi_w25q256.c</FileName>
               <FileType>1</FileType>
               <FilePath>..\Drivers\User\Src\qspi_w25q256.c</FilePath>
+            </File>
+            <File>
+              <FileName>esp32_iot.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\Drivers\User\Src\esp32_iot.c</FilePath>
+            </File>
+            <File>
+              <FileName>pir.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\Drivers\User\Src\pir.c</FilePath>
             </File>
           </Files>
         </Group>

@@ -12,6 +12,8 @@
 "stm32h750xbh6\sccb.o"
 "stm32h750xbh6\dcmi_ov5640.o"
 "stm32h750xbh6\qspi_w25q256.o"
+"stm32h750xbh6\esp32_iot.o"
+"stm32h750xbh6\pir.o"
 "stm32h750xbh6\stm32h7xx_hal_cortex.o"
 "stm32h750xbh6\stm32h7xx_hal_dcmi.o"
 "stm32h750xbh6\stm32h7xx_hal_rcc.o"

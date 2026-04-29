@@ -55,4 +55,6 @@ stm32h750xbh6\main.o: D:\Keil_v5\ARM\ARMCC\Bin\..\include\stdbool.h
 stm32h750xbh6\main.o: ..\X-CUBE-AI\App\network_2_data.h
 stm32h750xbh6\main.o: ..\X-CUBE-AI\App\network_2_data_params.h
 stm32h750xbh6\main.o: ../Core/Inc/ai_image_process.h
+stm32h750xbh6\main.o: ../Drivers/User/Inc/esp32_iot.h
+stm32h750xbh6\main.o: ../Drivers/User/Inc/pir.h
 stm32h750xbh6\main.o: D:\Keil_v5\ARM\ARMCC\Bin\..\include\string.h
